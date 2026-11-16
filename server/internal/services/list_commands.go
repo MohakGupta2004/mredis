@@ -5,48 +5,61 @@ import (
 	"time"
 
 	"github.com/MohakGupta2004/mredis/internal/resp"
+	"github.com/MohakGupta2004/mredis/internal/utils"
 )
 
-func handleRPush(args []string, store *StoreType) string {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	key := args[0]
-	list := store.getOrCreateList(key)
+type listCommand struct {
+	args  []string
+	store *StoreType
+}
 
-	for _, val := range args[1:] {
+func newListCommand(args []string, store *StoreType) *listCommand {
+	return &listCommand{
+		args:  args,
+		store: store,
+	}
+}
+
+func (c *listCommand) rpush() string {
+	c.store.mu.Lock()
+	defer c.store.mu.Unlock()
+	key := utils.GetKey(c.args)
+	list := c.store.getOrCreateList(key)
+
+	for _, val := range utils.GetValues(c.args) {
 		list.RPush(val)
 	}
-	if len(store.waiters[key]) > 0 {
-		waiter := store.waiters[key][0]
-		store.waiters[key] = store.waiters[key][1:]
+	if len(c.store.waiters[key]) > 0 {
+		waiter := c.store.waiters[key][0]
+		c.store.waiters[key] = c.store.waiters[key][1:]
 		values := []string{key}
 		values = append(values, getListRange(list, 0, list.Size())...)
 		waiter <- resp.WriteArray(values)
 	}
-	store.list[key] = list
+	c.store.list[key] = list
 	return resp.WriteInteger(list.Size())
 }
 
-func handleLPush(args []string, store *StoreType) string {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	key := args[0]
-	list := store.getOrCreateList(key)
+func (c *listCommand) lpush() string {
+	c.store.mu.Lock()
+	defer c.store.mu.Unlock()
+	key := utils.GetKey(c.args)
+	list := c.store.getOrCreateList(key)
 
-	for _, val := range args[1:] {
+	for _, val := range utils.GetValues(c.args) {
 		list.LPush(val)
 	}
-	store.list[key] = list
+	c.store.list[key] = list
 	return resp.WriteInteger(list.Size())
 }
 
-func handleLRange(args []string, store *StoreType) string {
-	key := args[0]
-	start, _ := strconv.Atoi(args[1])
-	end, _ := strconv.Atoi(args[2])
-	store.mu.RLock()
-	list := store.list[key]
-	store.mu.RUnlock()
+func (c *listCommand) lrange() string {
+	key := utils.GetKey(c.args)
+	start, _ := strconv.Atoi(utils.GetValue(c.args, 0))
+	end, _ := strconv.Atoi(utils.GetValue(c.args, 1))
+	c.store.mu.RLock()
+	list := c.store.list[key]
+	c.store.mu.RUnlock()
 	size := list.Size()
 	if size == 0 {
 		return resp.WriteArrayHeader(0)
@@ -74,29 +87,29 @@ func handleLRange(args []string, store *StoreType) string {
 	return res
 }
 
-func handleLLen(args []string, store *StoreType) string {
-	key := args[0]
-	store.mu.RLock()
-	list, exists := store.list[key]
+func (c *listCommand) llen() string {
+	key := utils.GetKey(c.args)
+	c.store.mu.RLock()
+	list, exists := c.store.list[key]
+	c.store.mu.RUnlock()
 	if !exists {
 		return resp.WriteInteger(0)
 	}
-	store.mu.RUnlock()
 
 	return resp.WriteInteger(list.Size())
 }
 
-func handleLPop(args []string, store *StoreType) string {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	key := args[0]
-	list, exists := store.list[key]
+func (c *listCommand) lpop() string {
+	c.store.mu.Lock()
+	defer c.store.mu.Unlock()
+	key := utils.GetKey(c.args)
+	list, exists := c.store.list[key]
 	if !exists {
 		return resp.WriteNullBulkString()
 	}
 
-	if len(args) > 1 {
-		count, _ := strconv.Atoi(args[1])
+	if len(c.args) > 1 {
+		count, _ := strconv.Atoi(utils.GetValue(c.args, 0))
 		res := resp.WriteArrayHeader(count)
 		for range count {
 			elem, exists := list.LPop()
@@ -112,24 +125,25 @@ func handleLPop(args []string, store *StoreType) string {
 	if !exists {
 		return resp.WriteNullBulkString()
 	}
-	store.list[key] = list
+	c.store.list[key] = list
 	return resp.WriteBulkString(elem)
 }
 
-func handleBLPop(args []string, store *StoreType) string {
-	store.mu.Lock()
-	key := args[0]
-	list := store.list[key]
+func (c *listCommand) blpop() string {
+	c.store.mu.Lock()
+	key := utils.GetKey(c.args)
+	list := c.store.list[key]
 	if list.Size() > 0 {
-		returnValue, _ := list.LPop()
-		store.list[key] = list
-		return returnValue
+		value, _ := list.LPop()
+		c.store.list[key] = list
+		c.store.mu.Unlock()
+		return resp.WriteArray([]string{key, value})
 	}
 
-	timeout := args[1]
+	timeout := utils.GetValue(c.args, 0)
 	result := make(chan string, 1)
-	store.waiters[key] = append(store.waiters[key], result)
-	store.mu.Unlock()
+	c.store.waiters[key] = append(c.store.waiters[key], result)
+	c.store.mu.Unlock()
 	if timeout == "0" {
 		return <-result
 	}
@@ -139,9 +153,9 @@ func handleBLPop(args []string, store *StoreType) string {
 	case value := <-result:
 		return value
 	case <-time.After(time.Duration(parsedTimeout * float64(time.Second))):
-		store.mu.Lock()
-		store.waiters[key] = store.waiters[key][1:]
-		store.mu.Unlock()
+		c.store.mu.Lock()
+		c.store.waiters[key] = c.store.waiters[key][1:]
+		c.store.mu.Unlock()
 		return resp.WriteNullArray()
 	}
 }

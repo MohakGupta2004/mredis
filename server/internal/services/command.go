@@ -3,27 +3,30 @@ package services
 import "github.com/MohakGupta2004/mredis/internal/resp"
 
 func ExecuteCommand(command string, args []string, store *StoreType) string {
+	cmd := newStringCommand(args, store)
+	list := newListCommand(args, store)
+
 	switch command {
 	case "echo":
-		return handleEcho(args)
+		return cmd.echo()
 	case "ping":
-		return handlePing()
+		return cmd.ping()
 	case "set":
-		return handleSet(args, store)
+		return cmd.set()
 	case "get":
-		return handleGet(args, store)
+		return cmd.get()
 	case "rpush":
-		return handleRPush(args, store)
+		return list.rpush()
 	case "lpush":
-		return handleLPush(args, store)
+		return list.lpush()
 	case "lrange":
-		return handleLRange(args, store)
+		return list.lrange()
 	case "llen":
-		return handleLLen(args, store)
+		return list.llen()
 	case "lpop":
-		return handleLPop(args, store)
+		return list.lpop()
 	case "blpop":
-		return handleBLPop(args, store)
+		return list.blpop()
 	default:
 		return resp.WriteError("ERR unknown command")
 	}
